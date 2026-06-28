@@ -14,13 +14,17 @@ zero external deps), so the running TUI *is* the Lisp image being driven.
   symlinks to it so ASDF resolves the dependency from this project; `make` also
   adds the project tree to the source registry explicitly, so the build works
   without any global config.
+- The **binary has no external dependencies** (only SBCL + tvision).  Only the
+  test suite pulls in [FiveAM](https://github.com/lispci/fiveam) (pinned in
+  `ocicl.csv`; run `ocicl install` to restore it on a fresh checkout).
 
 ## Building & running
 
 ```sh
 make            # build ./tvlisp
 make run        # build and run
-make test       # pty smoke tests against the built binary
+make test       # unit suite (88 checks) + end-to-end pty smoke test (11 checks)
+make test-lisp  # just the headless unit suite (REPL/debugger/inspector/threads)
 make clean      # remove the binary and this project's fasl cache
 
 # or directly, without make (from this directory):

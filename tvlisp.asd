@@ -16,4 +16,19 @@
   :build-pathname "tvlisp"
   :entry-point "tvision-tvlisp:toplevel"
   :components ((:module "src"
-                :components ((:file "tvlisp")))))
+                :serial t
+                ;; threadmon + repl extend the TVISION package but are
+                ;; application-level (not part of the core tvision library)
+                :components ((:file "threadmon")
+                             (:file "repl")
+                             (:file "tvlisp")))))
+
+(asdf:defsystem "tvlisp/tests"
+  :description "Tests for tvlisp's REPL / debugger / inspector / thread monitor.
+Only the tests depend on FiveAM; the tvlisp binary has no external dependencies."
+  :depends-on ("tvlisp" "fiveam")
+  :serial t
+  :components ((:module "tests"
+                :components ((:file "tvlisp-tests"))))
+  :perform (asdf:test-op (o c)
+             (uiop:symbol-call :tvision-tvlisp-tests :run-tests)))
