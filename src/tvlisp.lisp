@@ -116,6 +116,7 @@
 (defparameter +cm-select-all+  391)   ; select the whole focused buffer
 (defparameter +cm-dosmouse+    392)   ; toggle the DOS-style software mouse cursor
 (defparameter +cm-project-manager+ 393)   ; open the multi-root project manager window
+(defparameter +cm-pm-reveal+    394)   ; reveal the focused editor's file in the project manager
 
 (defparameter +hc-repl+ 1)
 ;; Computed at runtime (not load/build time) so they follow the running user's
@@ -273,6 +274,7 @@
       (menu-separator)
       (menu-item "T~h~reads..." +cm-threads+ :key-code +kb-f9+ :key-text "F9")
       (menu-item "Pro~j~ects"   +cm-project-manager+ :key-text "Alt-P")
+      (menu-item "~R~eveal current file" +cm-pm-reveal+)
       (menu-item "Object clip~b~oard" +cm-clipboard+)))
    (sub-menu "~H~elp"
      (new-menu
@@ -369,6 +371,8 @@
   "Throttle for idle-time thread-monitor auto-refresh.")
 (defvar *last-git-check* 0
   "Throttle for idle-time git-gutter auto-refresh.")
+(defvar *last-pm-check* 0
+  "Throttle for idle-time project-manager auto-refresh.")
 
 (defmethod tvision::idle ((app tvlisp-app))
   "While a thread monitor is open, refresh it when the live thread set changes
@@ -392,7 +396,18 @@
           (let ((ed (editor-window-editor w)))
             (when (and ed (plusp (text-gutter-width ed)))
               (refresh-git-signs ed :redraw t)
-              (when tvision:*screen* (flush-screen tvision:*screen*)))))))))
+              (when tvision:*screen* (flush-screen tvision:*screen*))))))))
+  ;; refresh the project manager (file list, open/closed bullets, git badges) so
+  ;; external changes show up on their own, and persist any expansion changes
+  (let ((now (get-internal-real-time)))
+    (when (> (- now *last-pm-check*) (floor (* 5 internal-time-units-per-second) 2))   ; ~2.5s
+      (setf *last-pm-check* now)
+      (let ((w (first-that (program-desktop app) (lambda (v) (typep v 'tproject-manager-window)))))
+        ;; skip while the user is mid-filter, so typing isn't disturbed
+        (when (and w (not (fo-filtering w)) (zerop (length (fo-query w))))
+          (%pm-rescan w)
+          (%pm-maybe-save w)
+          (when tvision:*screen* (flush-screen tvision:*screen*)))))))
 
 (defun open-thread-window (app)
   (let* ((desk (program-desktop app))
@@ -4325,12 +4340,25 @@ touched (the preview shows exactly what changes)."
         when (and (typep w 'teditor-window) (editor-filename (editor-window-editor w)))
           collect (%path-key (editor-filename (editor-window-editor w)))))
 
-(defun %project-file-text (path open-keys)
-  "Outline label for source file PATH: a filled bullet when it is open, a hollow
-one otherwise."
-  (format nil "~:[○~;●~] ~a"
-          (member (%path-key path) open-keys :test #'string=)
-          (file-namestring path)))
+(defvar *pm-loaded-files* (make-hash-table :test 'equal)
+  "Path-keys of files loaded / compiled into the image via the project manager.")
+
+(defun %project-file-text (path open-keys &optional status)
+  "Outline label for source file PATH: a filled bullet when it is open in an
+editor, a hollow one otherwise, plus a tag combining git status (M modified,
++ added, ? untracked) and L when the file has been loaded into the image."
+  (let* ((key (%path-key path))
+         (tag (concatenate 'string
+                           (case status (:modified "M") (:added "+") (:untracked "?") (t ""))
+                           (if (gethash key *pm-loaded-files*) "L" ""))))
+    (format nil "~:[○~;●~] ~a~:[~;  [~a]~]"
+            (member key open-keys :test #'string=)
+            (file-namestring path)
+            (plusp (length tag)) tag)))
+
+(defun %status-color (status)
+  "Foreground colour index used to tint a file row by git STATUS, or NIL."
+  (case status (:modified 14) (:added 10) (:untracked 12) (t nil)))
 
 (defun %node-file-paths (node)
   "Every source-file pathname carried by NODE and its descendants, in order."
@@ -4548,21 +4576,29 @@ files as a collapsible tree."
 
 (defun projects-file () (merge-pathnames ".tvlisp_projects" (user-homedir-pathname)))
 
+(defun %read-projects-file ()
+  (ignore-errors
+   (with-open-file (s (projects-file) :if-does-not-exist nil) (and s (read s nil nil)))))
+
+(defun %project-entries (data)
+  "The per-root entries from DATA, accepting both the old format (a list of path
+strings) and the new (:version N :roots ((:path .. :open ..) ..))."
+  (if (and (consp data) (eq (car data) :version)) (getf data :roots) data))
+
 (defun load-project-roots ()
   "The saved project roots as directory pathnames (only those still on disk)."
-  (let ((saved (ignore-errors
-                (with-open-file (s (projects-file) :if-does-not-exist nil)
-                  (and s (read s nil nil))))))
-    (loop for p in saved
-          for d = (ignore-errors (uiop:ensure-directory-pathname p))
-          when (and d (uiop:directory-exists-p d)) collect d)))
+  (loop for e in (%project-entries (%read-projects-file))
+        for p = (if (consp e) (getf e :path) e)
+        for d = (ignore-errors (uiop:ensure-directory-pathname p))
+        when (and d (uiop:directory-exists-p d)) collect d))
 
-(defun save-project-roots (roots)
-  (ignore-errors
-   (with-open-file (s (projects-file) :direction :output
-                                      :if-exists :supersede :if-does-not-exist :create)
-     (let ((*print-readably* nil))
-       (prin1 (mapcar #'namestring roots) s)))))
+(defun load-project-open ()
+  "Map of root-dir namestring -> saved list of expanded relative dir-paths."
+  (let ((h (make-hash-table :test 'equal)))
+    (dolist (e (%project-entries (%read-projects-file)) h)
+      (when (consp e)
+        (let ((d (ignore-errors (uiop:ensure-directory-pathname (getf e :path)))))
+          (when d (setf (gethash (namestring d) h) (getf e :open))))))))
 
 (defun %dir-basename (dir)
   "The last path component of directory DIR (its display name)."
@@ -4577,18 +4613,37 @@ files as a collapsible tree."
 
 (defun %remove-nth (n list) (append (subseq list 0 n) (subseq list (1+ n))))
 
-(defun %git-files (dir)
-  "Sorted relative paths git tracks under DIR, or NIL when DIR is not a git repo."
+(defun %git-lines (dir &rest args)
+  "Run `git -C DIR ARGS', returning its non-empty output lines, or NIL on
+failure (e.g. DIR is not a git repository)."
   (handler-case
       (let* ((out (make-string-output-stream))
-             (p (sb-ext:run-program "git" (list "-C" (namestring dir) "ls-files")
+             (p (sb-ext:run-program "git" (list* "-C" (namestring dir) args)
                                     :search t :output out :error nil :wait t)))
         (when (and p (eql 0 (sb-ext:process-exit-code p)))
-          (let ((lines (with-input-from-string (s (get-output-stream-string out))
-                         (loop for l = (read-line s nil nil) while l
-                               when (plusp (length l)) collect l))))
-            (and lines (sort lines #'string<)))))
+          (with-input-from-string (s (get-output-stream-string out))
+            (loop for l = (read-line s nil nil) while l
+                  when (plusp (length l)) collect l))))
     (error () nil)))
+
+(defun %git-files (dir)
+  "Sorted relative paths git tracks under DIR, or NIL when DIR is not a git repo."
+  (let ((ls (%git-lines dir "ls-files")))
+    (and ls (sort (copy-list ls) #'string<))))
+
+(defun %git-status-map (dir)
+  "Hash table of relative-path -> status keyword (:added :modified) for tracked
+files git reports as changed under DIR.  (Untracked files are listed separately
+via `ls-files --others' so whole-directory entries don't appear nameless.)"
+  (let ((map (make-hash-table :test 'equal)))
+    (dolist (l (%git-lines dir "status" "--porcelain") map)
+      (when (and (> (length l) 3) (not (string= (subseq l 0 2) "??")))
+        (let* ((xy (subseq l 0 2))
+               (rest (subseq l 3))
+               (arrow (search " -> " rest))   ; "old -> new" rename: key on the new name
+               (path (string-trim '(#\") (if arrow (subseq rest (+ arrow 4)) rest))))
+          (setf (gethash path map)
+                (if (char= (char xy 0) #\A) :added :modified)))))))
 
 (defun %walk-files (dir)
   "Every file under DIR (recursively, skipping .git) as sorted relative paths."
@@ -4609,10 +4664,12 @@ files as a collapsible tree."
                    (some #'walk (outline-node-children n))))))
     (walk node)))
 
-(defun %fs-tree-nodes (entries dir open-keys)
+(defun %fs-tree-nodes (entries dir open-keys status)
   "Outline nodes for ENTRIES -- a list of (SEGMENTS . ABS-PATH) under directory
 DIR.  Subdirectories (expandable) come before files; file leaves carry their
-pathname and an open/closed bullet."
+pathname, an open/closed bullet, and a git-status tag/tint (STATUS maps an
+absolute-path namestring -> status keyword).  A directory containing any changed
+file is tinted too."
   (let ((order '()) (groups (make-hash-table :test 'equal)))
     (dolist (e entries)
       (let ((head (first (car e))))
@@ -4623,16 +4680,20 @@ pathname and an open/closed bullet."
         (let* ((es (nreverse (gethash head groups)))
                (file (and (= (length es) 1) (null (rest (car (first es)))) (first es))))
           (if file
-              (push (make-outline-node (%project-file-text (cdr file) open-keys)
-                                       nil (cdr file))
-                    nodes)
+              (let* ((p (cdr file))
+                     (st (and status (gethash (namestring p) status)))
+                     (leaf (make-outline-node (%project-file-text p open-keys st) nil p)))
+                (setf (outline-node-color leaf) (%status-color st))
+                (push leaf nodes))
               (let* ((sub (uiop:ensure-directory-pathname (merge-pathnames head dir)))
                      (kids (%fs-tree-nodes
                             (mapcar (lambda (e) (cons (rest (car e)) (cdr e))) es)
-                            sub open-keys))
+                            sub open-keys status))
                      (node (make-outline-node (format nil "~a/" head) kids)))
                 ;; expand by default only when the directory contains .lisp files
                 (setf (outline-node-expanded node) (%node-has-lisp node))
+                ;; a folder with changed descendants is tinted (no text tag)
+                (when (some #'outline-node-color kids) (setf (outline-node-color node) 14))
                 (push node nodes)))))
       (setf nodes (nreverse nodes))
       ;; directories (those with children) first, files after; each already sorted
@@ -4640,15 +4701,32 @@ pathname and an open/closed bullet."
               (remove-if #'outline-node-children nodes)))))
 
 (defun %fs-root-node (dir open-keys)
-  "Top-level outline node for project root DIR: its git-tracked (or, if not a git
-repo, all) files as a tree.  DATA is NIL (it is a container, not a file)."
+  "Top-level outline node for project root DIR: its git-tracked files (plus
+untracked ones, with status tags), or every file when DIR is not a git repo.
+DATA is NIL (it is a container, not a file)."
   (let* ((dir (uiop:ensure-directory-pathname dir))
-         (rels (or (%git-files dir) (%walk-files dir)))
+         (tracked (%git-files dir))
+         ;; untracked-but-not-ignored files, listed individually (so a wholly-new
+         ;; directory shows its files, not a nameless entry)
+         (others  (and tracked (%git-lines dir "ls-files" "--others" "--exclude-standard")))
+         (smap    (and tracked (%git-status-map dir)))   ; tracked file -> :modified/:added
+         (rels (if tracked
+                   (sort (remove-duplicates (append tracked others) :test #'string=) #'string<)
+                   (%walk-files dir)))
+         ;; status keyed by absolute-path namestring for per-leaf lookup
+         (abs-status (when tracked
+                       (let ((h (make-hash-table :test 'equal)))
+                         (maphash (lambda (rel st)
+                                    (setf (gethash (namestring (merge-pathnames rel dir)) h) st))
+                                  smap)
+                         (dolist (rel others)
+                           (setf (gethash (namestring (merge-pathnames rel dir)) h) :untracked))
+                         h)))
          (entries (mapcar (lambda (r)
                             (cons (uiop:split-string r :separator "/")
                                   (merge-pathnames r dir)))
                           rels))
-         (node (make-outline-node "" (%fs-tree-nodes entries dir open-keys))))
+         (node (make-outline-node "" (%fs-tree-nodes entries dir open-keys abs-status))))
     (setf (outline-node-expanded node) t
           (outline-node-text node)
           (format nil "~a   ~a  (~d file~:p)"
@@ -4663,8 +4741,58 @@ repo, all) files as a tree.  DATA is NIL (it is a container, not a file)."
 (defclass tproject-manager-window (tproject-window)
   ((pm-roots :initarg :pm-roots :initform '() :accessor pm-roots))   ; dir pathnames, parallel to FO-ALL-ROOTS
   (:documentation "A persistent multi-root file explorer.  A:add root, R:remove
-root, Enter:open/focus the file at point, O:open all files under the node,
-G:rescan from disk, `/':fuzzy-filter.  Roots persist in ~/.tvlisp_projects."))
+root, Enter:open/focus the file at point, O:open all files under the node, L:load
+/ C:compile the file into the image, G:rescan from disk, `/':fuzzy-filter.  Roots
+and their expanded folders persist in ~/.tvlisp_projects."))
+
+(defun %pm-dir-relpath (prefix name)
+  (if (zerop (length prefix)) name (format nil "~a/~a" prefix name)))
+
+(defvar *pm-last-saved* nil
+  "The most recently persisted view spec, so idle auto-save only writes on change.")
+
+(defun %pm-view-spec (w)
+  "Saveable spec for W: a list of (:path NS :open (relpaths)) -- the expanded
+sub-directories of each root, for persisting the layout."
+  (loop for root in (fo-all-roots w)
+        for dir in (pm-roots w)
+        collect (list :path (namestring dir)
+                      :open (let ((acc '()))
+                              (labels ((walk (n prefix)
+                                         (when (outline-node-children n)
+                                           (when (and (plusp (length prefix)) (outline-node-expanded n))
+                                             (push prefix acc))
+                                           (dolist (c (outline-node-children n))
+                                             (when (outline-node-children c)
+                                               (walk c (%pm-dir-relpath
+                                                        prefix (string-right-trim "/" (outline-node-text c)))))))))
+                                (walk root ""))
+                              (nreverse acc)))))
+
+(defun save-project-state (w)
+  "Persist W's roots and their expanded folders to ~/.tvlisp_projects."
+  (let ((spec (%pm-view-spec w)))
+    (setf *pm-last-saved* spec)
+    (ignore-errors
+     (with-open-file (s (projects-file) :direction :output
+                                        :if-exists :supersede :if-does-not-exist :create)
+       (let ((*print-readably* nil)) (prin1 (list :version 1 :roots spec) s))))))
+
+(defun %pm-maybe-save (w)
+  "Persist W's view only when it differs from the last save (for idle auto-save)."
+  (unless (equal (%pm-view-spec w) *pm-last-saved*) (save-project-state w)))
+
+(defun %pm-restore-open (node open-set)
+  "Set NODE's subtree expansion from OPEN-SET (a list of relpath strings): a
+sub-directory is expanded iff its relpath is listed.  The root NODE stays open."
+  (labels ((walk (n prefix)
+             (when (outline-node-children n)
+               (when (plusp (length prefix))
+                 (setf (outline-node-expanded n) (and (member prefix open-set :test #'string=) t)))
+               (dolist (c (outline-node-children n))
+                 (when (outline-node-children c)
+                   (walk c (%pm-dir-relpath prefix (string-right-trim "/" (outline-node-text c)))))))))
+    (walk node "")))
 
 (defun %pm-add-root (w)
   "Pick a directory and add it as a new project root."
@@ -4677,7 +4805,7 @@ G:rescan from disk, `/':fuzzy-filter.  Roots persist in ~/.tvlisp_projects."))
             (let ((node (%fs-root-node d (%open-editor-keys (pw-app w)))))
               (setf (pm-roots w) (append (pm-roots w) (list d))
                     (fo-all-roots w) (append (fo-all-roots w) (list node)))
-              (save-project-roots (pm-roots w))
+              (save-project-state w)
               (%fo-apply w)
               (redraw (program-desktop (pw-app w)))))))))
 
@@ -4695,18 +4823,122 @@ G:rescan from disk, `/':fuzzy-filter.  Roots persist in ~/.tvlisp_projects."))
                        (logior +mf-confirmation+ +mf-yes-button+ +mf-no-button+)))
        (setf (pm-roots w)     (%remove-nth idx (pm-roots w))
              (fo-all-roots w) (%remove-nth idx (fo-all-roots w)))
-       (save-project-roots (pm-roots w))
+       (save-project-state w)
        (outline-focus ol 0)
        (%fo-apply w)
        (redraw (program-desktop (pw-app w)))))))
 
+(defun %pm-capture-view (w)
+  "Snapshot the tree's view state.  Returns (values SEEN OPEN FOCUS): SEEN/OPEN
+are hash sets of \"<root-index>:<relpath>\" keys for all / expanded directories;
+FOCUS is a stable key for the focused node (file by path, dir by relpath)."
+  (let ((seen (make-hash-table :test 'equal))
+        (open (make-hash-table :test 'equal))
+        (cur (outline-current (pw-outline w)))
+        (focus nil))
+    (loop for root in (fo-all-roots w) for ri from 0 do
+      (labels ((walk (n prefix)
+                 (let ((dkey (format nil "~d:~a" ri prefix)))
+                   (setf (gethash dkey seen) t)
+                   (when (outline-node-expanded n) (setf (gethash dkey open) t))
+                   (when (eq n cur) (setf focus (format nil "D~d:~a" ri prefix)))
+                   (dolist (c (outline-node-children n))
+                     (cond
+                       ((outline-node-children c)
+                        (walk c (%pm-dir-relpath prefix (string-right-trim "/" (outline-node-text c)))))
+                       ((eq c cur)
+                        (setf focus (format nil "F~d:~a" ri
+                                            (and (pathnamep (outline-node-data c))
+                                                 (namestring (outline-node-data c)))))))))))
+        (walk root "")))
+    (values seen open focus)))
+
+(defun %pm-apply-view (w seen open focus)
+  "Re-apply expansion (SEEN/OPEN) to the rebuilt tree and return the node matching
+FOCUS, or NIL.  Directories unknown to SEEN keep their default expansion."
+  (let ((found nil))
+    (loop for root in (fo-all-roots w) for ri from 0 do
+      (labels ((walk (n prefix)
+                 (let ((dkey (format nil "~d:~a" ri prefix)))
+                   (when (gethash dkey seen)
+                     (setf (outline-node-expanded n) (and (gethash dkey open) t)))
+                   (when (and focus (string= focus (format nil "D~d:~a" ri prefix)))
+                     (setf found n))
+                   (dolist (c (outline-node-children n))
+                     (cond
+                       ((outline-node-children c)
+                        (walk c (%pm-dir-relpath prefix (string-right-trim "/" (outline-node-text c)))))
+                       ((and focus (pathnamep (outline-node-data c))
+                             (string= focus (format nil "F~d:~a" ri (namestring (outline-node-data c)))))
+                        (setf found c)))))))
+        (walk root "")))
+    found))
+
 (defun %pm-rescan (w)
-  "Rebuild every root's tree from disk (picks up added/removed files)."
-  (let ((open (%open-editor-keys (pw-app w))))
-    (setf (fo-all-roots w) (mapcar (lambda (d) (%fs-root-node d open)) (pm-roots w)))
+  "Rebuild every root's tree from disk (new/removed files, fresh git status),
+preserving which folders were expanded and the cursor position."
+  (multiple-value-bind (seen open focus) (%pm-capture-view w)
+    (let ((openk (%open-editor-keys (pw-app w))))
+      (setf (fo-all-roots w) (mapcar (lambda (d) (%fs-root-node d openk)) (pm-roots w)))
+      (let ((found (%pm-apply-view w seen open focus)))
+        (%fo-apply w)
+        (outline-focus (pw-outline w)
+                       (or (and found (position found (outline-visible (pw-outline w)) :key #'car)) 0))
+        (redraw (program-desktop (pw-app w)))))))
+
+(defun %pm-reveal (w path)
+  "Expand the tree to the file matching PATH, clear any active filter, and move
+the cursor onto it.  Returns T when the file is found under some root."
+  (let ((key (%path-key path)) (found nil))
+    (setf (fo-filtering w) nil (fo-query w) "")
+    (labels ((walk (n)
+               (cond
+                 ((and (pathnamep (outline-node-data n))
+                       (string= key (%path-key (outline-node-data n))))
+                  (setf found n) t)
+                 ((some #'walk (outline-node-children n))
+                  (setf (outline-node-expanded n) t) t)
+                 (t nil))))
+      (dolist (root (fo-all-roots w)) (walk root)))
     (%fo-apply w)
-    (outline-focus (pw-outline w) 0)
-    (redraw (program-desktop (pw-app w)))))
+    (when found
+      (let ((idx (position found (outline-visible (pw-outline w)) :key #'car)))
+        (when idx (outline-focus (pw-outline w) idx))))
+    (focus (pw-outline w))
+    (and found t)))
+
+(defun %pm-load-node (w compilep)
+  "Load (COMPILEP NIL) or compile-and-load (COMPILEP T) the file at the cursor
+into the running image, marking it loaded.  Output is suppressed and errors are
+shown in a dialog rather than dropping into a debugger."
+  (let* ((node (outline-current (pw-outline w)))
+         (path (and node (outline-node-data node))))
+    (cond
+      ((not (pathnamep path))
+       (message-box "Move the cursor onto a file to load it."
+                    (logior +mf-information+ +mf-ok-button+)))
+      (t (handler-case
+             (let ((*standard-output* (make-string-output-stream))
+                   (*error-output* (make-string-output-stream)))
+               (cond
+                 (compilep
+                  (multiple-value-bind (out warn fail) (compile-file path)
+                    (declare (ignore warn))
+                    (cond
+                      ((and out (not fail))
+                       (load out)
+                       (setf (gethash (%path-key path) *pm-loaded-files*) t)
+                       (%project-refresh w)
+                       (message-box (format nil "Compiled and loaded ~a." (file-namestring path))
+                                    (logior +mf-information+ +mf-ok-button+)))
+                      (t (message-box (format nil "Compilation of ~a failed." (file-namestring path))
+                                      (logior +mf-error+ +mf-ok-button+))))))
+                 (t (load path)
+                    (setf (gethash (%path-key path) *pm-loaded-files*) t)
+                    (%project-refresh w)
+                    (message-box (format nil "Loaded ~a." (file-namestring path))
+                                 (logior +mf-information+ +mf-ok-button+)))))
+           (error (e) (err-box e)))))))
 
 (defmethod handle-event ((w tproject-manager-window) event)
   (cond
@@ -4728,6 +4960,8 @@ G:rescan from disk, `/':fuzzy-filter.  Roots persist in ~/.tvlisp_projects."))
        (#\a (%pm-add-root w) (clear-event event))
        (#\r (%pm-remove-root w) (clear-event event))
        (#\o (%project-open-node w) (clear-event event))
+       (#\l (%pm-load-node w nil) (clear-event event))
+       (#\c (%pm-load-node w t)   (clear-event event))
        (#\g (%pm-rescan w) (clear-event event))
        (t (call-next-method))))
     (t (call-next-method))))
@@ -4740,12 +4974,20 @@ G:rescan from disk, `/':fuzzy-filter.  Roots persist in ~/.tvlisp_projects."))
         (progn (focus existing) existing)
         (let* ((desk (program-desktop app))
                (dw (point-x (view-size desk))) (dh (point-y (view-size desk)))
-               (ww (min 62 (- dw 2))) (wh (min 24 (- dh 2)))
+               (ww (min 76 (- dw 2))) (wh (min 24 (- dh 2)))
                (open (%open-editor-keys app))
-               (nodes (mapcar (lambda (d) (%fs-root-node d open)) dirs))
+               (open-map (load-project-open))
+               (nodes (mapcar (lambda (d)
+                                (let ((n (%fs-root-node d open)))
+                                  ;; restore the saved expanded-folder layout, if any
+                                  (multiple-value-bind (set present)
+                                      (gethash (namestring d) open-map)
+                                    (when present (%pm-restore-open n set)))
+                                  n))
+                              dirs))
                (win (make-instance 'tproject-manager-window :app app :pm-roots dirs
                       :all-roots nodes
-                      :title "Projects  (A:add R:remove Enter:open O:all G:rescan /:filter)"
+                      :title "Projects  (A:add R:remove Enter:open L:load C:compile G:rescan /:filter)"
                       :bounds (make-trect 0 0 ww wh)))
                (vsb (standard-scrollbar win t))
                (hsb (standard-scrollbar win nil))
@@ -4755,7 +4997,22 @@ G:rescan from disk, `/':fuzzy-filter.  Roots persist in ~/.tvlisp_projects."))
           (setf (pw-outline win) ol)
           (move-to win (max 0 (floor (- dw ww) 2)) (max 0 (floor (- dh wh) 2)))
           (insert desk win) (focus ol)
+          (setf *pm-last-saved* (%pm-view-spec win))   ; baseline for idle auto-save
           win))))
+
+(defun do-pm-reveal (app)
+  "Reveal the focused editor's file in the project manager, opening it if needed."
+  (let* ((cw (group-current (program-desktop app)))
+         (path (and (typep cw 'teditor-window)
+                    (editor-filename (editor-window-editor cw)))))
+    (cond
+      ((null path)
+       (message-box "Focus an editor with a saved file to reveal it in Projects."
+                    (logior +mf-information+ +mf-ok-button+)))
+      (t (let ((pm (open-project-manager app)))
+           (unless (%pm-reveal pm path)
+             (message-box "That file is not under any project root (add its folder with A)."
+                          (logior +mf-information+ +mf-ok-button+))))))))
 
 ;;; --- session save/restore --------------------------------------------------
 
@@ -5122,6 +5379,7 @@ string or comment (so it won't fight existing literals)."
           ((= c +cm-editor+)      (do-open-editor app) (clear-event event))
           ((= c +cm-project+)     (do-project app) (clear-event event))
           ((= c +cm-project-manager+) (open-project-manager app) (clear-event event))
+          ((= c +cm-pm-reveal+)   (do-pm-reveal app) (clear-event event))
           ((= c +cm-save+)        (do-save-editor app) (clear-event event))
           ((= c +cm-saveas+)      (do-saveas-editor app) (clear-event event))
           ((= c +cm-save-all+)    (do-save-all app) (clear-event event))

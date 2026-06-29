@@ -216,6 +216,17 @@ def run_project_manager(binary):
               "`/` filter narrows the tree to matches")
         tv.send(b"\x1b", 0.3)       # Esc clears the filter
         check(tv.wait("tvlisp.lisp"), "Esc restores the full tree")
+        # rescan (G) preserves expansion: collapse the root, rescan, still collapsed
+        tv.send(b"\x1b[D", 0.4)     # Left: collapse the focused root node
+        check(not tv.has("tvlisp.lisp"), "collapsing the root hides its files")
+        tv.send(b"g", 0.6)          # G: rescan from disk
+        check(not tv.has("tvlisp.lisp"), "rescan (G) preserves collapsed state")
+        tv.send(b"\x1b[C", 0.4)     # Right: re-expand
+        check(tv.wait("tvlisp.lisp"), "re-expanding shows files again")
+        # the "Reveal current file" command is wired into the Window menu
+        tv.send(b"\x1bw", 0.5)      # Alt-W: Window menu
+        check(tv.has("Reveal"), "Window menu offers 'Reveal current file'")
+        tv.send(b"\x1b", 0.3)       # close the menu
     finally:
         tv.close()
 
