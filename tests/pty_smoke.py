@@ -188,6 +188,49 @@ def run(binary):
             pass
 
 
+def run_project_manager(binary):
+    """The multi-root project manager: auto-restore from ~/.tvlisp_projects, the
+    git-tracked file tree, the .lisp-aware default expand state, `/`-filter, and
+    the Alt-P shortcut."""
+    home = tempfile.mkdtemp(prefix="tvlisp-pm-")
+    # seed one project root (this very repo) as a readable Lisp list of strings
+    with open(os.path.join(home, ".tvlisp_projects"), "w") as f:
+        f.write('("%s")' % ROOT)
+    tv = Tv(binary, home)
+    try:
+        check(tv.wait("REPL>"), "REPL prompt appears")
+        # the manager reopens itself from the saved root
+        check(tv.wait("G:rescan"), "project manager auto-restores on startup")
+        tv.send(b"\x1b[15~", 0.8)   # F5: zoom it to fill the desktop for a clean read
+        tv.pump(0.5)
+        # src/ holds .lisp files -> expanded by default, so its files are visible
+        check(tv.has("tvlisp.lisp"), "git-tracked source file shown in the tree")
+        # media/ has no .lisp -> collapsed by default, so its files stay hidden
+        check(tv.has("media/") and not tv.has("auto-indent.cast"),
+              "non-lisp directory is collapsed by default")
+        # `/`-filter prunes the tree to matching files
+        tv.send(b"/", 0.3)
+        tv.type("asd")
+        tv.pump(0.6)
+        check(tv.has("tvlisp.asd") and not tv.has("tvlisp.lisp"),
+              "`/` filter narrows the tree to matches")
+        tv.send(b"\x1b", 0.3)       # Esc clears the filter
+        check(tv.wait("tvlisp.lisp"), "Esc restores the full tree")
+    finally:
+        tv.close()
+
+    # Alt-P opens the manager in a session that had no saved roots.
+    home2 = tempfile.mkdtemp(prefix="tvlisp-pm2-")
+    tv2 = Tv(binary, home2)
+    try:
+        tv2.wait("REPL>")
+        check(not tv2.has("G:rescan"), "no project manager without saved roots")
+        tv2.send(b"\x1bp", 0.6)     # Alt-P
+        check(tv2.wait("G:rescan"), "Alt-P opens the project manager")
+    finally:
+        tv2.close()
+
+
 def main():
     binary = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "tvlisp")
     if not os.path.exists(binary):
@@ -195,6 +238,8 @@ def main():
         return 2
     print("== tvlisp pty smoke tests ==")
     run(binary)
+    print("-- project manager --")
+    run_project_manager(binary)
     print(f"==== {PASS + FAIL} checks, {FAIL} failures ====")
     return 0 if FAIL == 0 else 1
 
