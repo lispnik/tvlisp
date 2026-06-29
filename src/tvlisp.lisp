@@ -115,6 +115,7 @@
 (defparameter +cm-clip-star+   390)   ; clip the REPL's last value (*)
 (defparameter +cm-select-all+  391)   ; select the whole focused buffer
 (defparameter +cm-dosmouse+    392)   ; toggle the DOS-style software mouse cursor
+(defparameter +cm-project-manager+ 393)   ; open the multi-root project manager window
 
 (defparameter +hc-repl+ 1)
 ;; Computed at runtime (not load/build time) so they follow the running user's
@@ -271,6 +272,7 @@
       (menu-item "~L~ist..."   +cm-winlist+ :key-text "Alt-0")
       (menu-separator)
       (menu-item "T~h~reads..." +cm-threads+ :key-code +kb-f9+ :key-text "F9")
+      (menu-item "Pro~j~ects"   +cm-project-manager+ :key-text "Alt-P")
       (menu-item "Object clip~b~oard" +cm-clipboard+)))
    (sub-menu "~H~elp"
      (new-menu
@@ -4535,6 +4537,226 @@ files as a collapsible tree."
               (move-to win (max 0 (floor (- dw ww) 2)) (max 0 (floor (- dh wh) 2)))
               (insert desk win) (focus ol)))))))
 
+;;; --- project manager: multiple filesystem roots ----------------------------
+;;; A persistent, multi-root file explorer (the IDE "sidebar").  Each root is a
+;;; directory; its tree is built from the files git tracks under it (`git
+;;; ls-files'), so build artifacts and ignored files never appear.  A root that
+;;; is not a git repository falls back to listing every file on disk.  Directory
+;;; nodes carry no DATA; file leaves carry their absolute pathname (so the shared
+;;; %PROJECT-* helpers -- open/refresh/open-all -- work unchanged).  The set of
+;;; roots is saved to ~/.tvlisp_projects and restored on startup.
+
+(defun projects-file () (merge-pathnames ".tvlisp_projects" (user-homedir-pathname)))
+
+(defun load-project-roots ()
+  "The saved project roots as directory pathnames (only those still on disk)."
+  (let ((saved (ignore-errors
+                (with-open-file (s (projects-file) :if-does-not-exist nil)
+                  (and s (read s nil nil))))))
+    (loop for p in saved
+          for d = (ignore-errors (uiop:ensure-directory-pathname p))
+          when (and d (uiop:directory-exists-p d)) collect d)))
+
+(defun save-project-roots (roots)
+  (ignore-errors
+   (with-open-file (s (projects-file) :direction :output
+                                      :if-exists :supersede :if-does-not-exist :create)
+     (let ((*print-readably* nil))
+       (prin1 (mapcar #'namestring roots) s)))))
+
+(defun %dir-basename (dir)
+  "The last path component of directory DIR (its display name)."
+  (car (last (pathname-directory (uiop:ensure-directory-pathname dir)))))
+
+(defun %abbrev-home (dir)
+  "DIR's namestring with the home directory abbreviated to ~/."
+  (let ((s (namestring dir)) (home (namestring (user-homedir-pathname))))
+    (if (and (>= (length s) (length home)) (string= home s :end2 (length home)))
+        (concatenate 'string "~/" (subseq s (length home)))
+        s)))
+
+(defun %remove-nth (n list) (append (subseq list 0 n) (subseq list (1+ n))))
+
+(defun %git-files (dir)
+  "Sorted relative paths git tracks under DIR, or NIL when DIR is not a git repo."
+  (handler-case
+      (let* ((out (make-string-output-stream))
+             (p (sb-ext:run-program "git" (list "-C" (namestring dir) "ls-files")
+                                    :search t :output out :error nil :wait t)))
+        (when (and p (eql 0 (sb-ext:process-exit-code p)))
+          (let ((lines (with-input-from-string (s (get-output-stream-string out))
+                         (loop for l = (read-line s nil nil) while l
+                               when (plusp (length l)) collect l))))
+            (and lines (sort lines #'string<)))))
+    (error () nil)))
+
+(defun %walk-files (dir)
+  "Every file under DIR (recursively, skipping .git) as sorted relative paths."
+  (let ((dir (uiop:ensure-directory-pathname dir)) (acc '()))
+    (labels ((walk (d)
+               (dolist (f (ignore-errors (uiop:directory-files d)))
+                 (push (enough-namestring f dir) acc))
+               (dolist (sub (ignore-errors (uiop:subdirectories d)))
+                 (unless (string= (%dir-basename sub) ".git") (walk sub)))))
+      (walk dir))
+    (sort acc #'string<)))
+
+(defun %node-has-lisp (node)
+  "T when NODE or any descendant is a .lisp file."
+  (labels ((walk (n)
+             (let ((d (outline-node-data n)))
+               (or (and (pathnamep d) (string-equal (pathname-type d) "lisp"))
+                   (some #'walk (outline-node-children n))))))
+    (walk node)))
+
+(defun %fs-tree-nodes (entries dir open-keys)
+  "Outline nodes for ENTRIES -- a list of (SEGMENTS . ABS-PATH) under directory
+DIR.  Subdirectories (expandable) come before files; file leaves carry their
+pathname and an open/closed bullet."
+  (let ((order '()) (groups (make-hash-table :test 'equal)))
+    (dolist (e entries)
+      (let ((head (first (car e))))
+        (unless (nth-value 1 (gethash head groups)) (push head order))
+        (push e (gethash head groups))))
+    (let ((nodes '()))
+      (dolist (head (nreverse order))
+        (let* ((es (nreverse (gethash head groups)))
+               (file (and (= (length es) 1) (null (rest (car (first es)))) (first es))))
+          (if file
+              (push (make-outline-node (%project-file-text (cdr file) open-keys)
+                                       nil (cdr file))
+                    nodes)
+              (let* ((sub (uiop:ensure-directory-pathname (merge-pathnames head dir)))
+                     (kids (%fs-tree-nodes
+                            (mapcar (lambda (e) (cons (rest (car e)) (cdr e))) es)
+                            sub open-keys))
+                     (node (make-outline-node (format nil "~a/" head) kids)))
+                ;; expand by default only when the directory contains .lisp files
+                (setf (outline-node-expanded node) (%node-has-lisp node))
+                (push node nodes)))))
+      (setf nodes (nreverse nodes))
+      ;; directories (those with children) first, files after; each already sorted
+      (append (remove-if-not #'outline-node-children nodes)
+              (remove-if #'outline-node-children nodes)))))
+
+(defun %fs-root-node (dir open-keys)
+  "Top-level outline node for project root DIR: its git-tracked (or, if not a git
+repo, all) files as a tree.  DATA is NIL (it is a container, not a file)."
+  (let* ((dir (uiop:ensure-directory-pathname dir))
+         (rels (or (%git-files dir) (%walk-files dir)))
+         (entries (mapcar (lambda (r)
+                            (cons (uiop:split-string r :separator "/")
+                                  (merge-pathnames r dir)))
+                          rels))
+         (node (make-outline-node "" (%fs-tree-nodes entries dir open-keys))))
+    (setf (outline-node-expanded node) t
+          (outline-node-text node)
+          (format nil "~a   ~a  (~d file~:p)"
+                  (%dir-basename dir) (%abbrev-home dir) (length rels)))
+    node))
+
+(defun %node-contains (root node)
+  "T when NODE is ROOT or appears anywhere in ROOT's subtree."
+  (labels ((walk (n) (or (eq n node) (some #'walk (outline-node-children n)))))
+    (walk root)))
+
+(defclass tproject-manager-window (tproject-window)
+  ((pm-roots :initarg :pm-roots :initform '() :accessor pm-roots))   ; dir pathnames, parallel to FO-ALL-ROOTS
+  (:documentation "A persistent multi-root file explorer.  A:add root, R:remove
+root, Enter:open/focus the file at point, O:open all files under the node,
+G:rescan from disk, `/':fuzzy-filter.  Roots persist in ~/.tvlisp_projects."))
+
+(defun %pm-add-root (w)
+  "Pick a directory and add it as a new project root."
+  (let ((dir (chdir-dialog :title "Add project root")))
+    (when dir
+      (let ((d (uiop:ensure-directory-pathname dir)))
+        (if (member (namestring d) (mapcar #'namestring (pm-roots w)) :test #'string=)
+            (message-box "That root is already in the list."
+                         (logior +mf-information+ +mf-ok-button+))
+            (let ((node (%fs-root-node d (%open-editor-keys (pw-app w)))))
+              (setf (pm-roots w) (append (pm-roots w) (list d))
+                    (fo-all-roots w) (append (fo-all-roots w) (list node)))
+              (save-project-roots (pm-roots w))
+              (%fo-apply w)
+              (redraw (program-desktop (pw-app w)))))))))
+
+(defun %pm-remove-root (w)
+  "Remove the project root the cursor is under (the files on disk are untouched)."
+  (let* ((ol (pw-outline w)) (node (outline-current ol))
+         (idx (and node (position-if (lambda (r) (%node-contains r node)) (fo-all-roots w)))))
+    (cond
+      ((null idx)
+       (message-box "Move the cursor onto a project to remove it."
+                    (logior +mf-information+ +mf-ok-button+)))
+      ((= +cm-yes+
+          (message-box (format nil "Remove project ~a from the list?~%(Files on disk are untouched.)"
+                               (%dir-basename (nth idx (pm-roots w))))
+                       (logior +mf-confirmation+ +mf-yes-button+ +mf-no-button+)))
+       (setf (pm-roots w)     (%remove-nth idx (pm-roots w))
+             (fo-all-roots w) (%remove-nth idx (fo-all-roots w)))
+       (save-project-roots (pm-roots w))
+       (outline-focus ol 0)
+       (%fo-apply w)
+       (redraw (program-desktop (pw-app w)))))))
+
+(defun %pm-rescan (w)
+  "Rebuild every root's tree from disk (picks up added/removed files)."
+  (let ((open (%open-editor-keys (pw-app w))))
+    (setf (fo-all-roots w) (mapcar (lambda (d) (%fs-root-node d open)) (pm-roots w)))
+    (%fo-apply w)
+    (outline-focus (pw-outline w) 0)
+    (redraw (program-desktop (pw-app w)))))
+
+(defmethod handle-event ((w tproject-manager-window) event)
+  (cond
+    ((%fo-filter-key w event) (clear-event event))
+    ((and (= (event-type event) +ev-broadcast+)
+          (= (event-command event) +cm-outline-item-selected+)
+          (pw-outline w))
+     (let ((n (outline-current (pw-outline w))))
+       (when (and n (pathnamep (outline-node-data n)))
+         (multiple-value-bind (win status) (%project-open-file (pw-app w) (outline-node-data n) t)
+           (declare (ignore win))
+           (if (eq status :missing)
+               (message-box (format nil "File not found:~%~a" (outline-node-data n))
+                            (logior +mf-error+ +mf-ok-button+))
+               (%project-refresh w)))))
+     (clear-event event))
+    ((and (= (event-type event) +ev-key-down+) (plusp (event-char-code event)))
+     (case (char-downcase (code-char (event-char-code event)))
+       (#\a (%pm-add-root w) (clear-event event))
+       (#\r (%pm-remove-root w) (clear-event event))
+       (#\o (%project-open-node w) (clear-event event))
+       (#\g (%pm-rescan w) (clear-event event))
+       (t (call-next-method))))
+    (t (call-next-method))))
+
+(defun open-project-manager (app &optional (dirs (load-project-roots)))
+  "Open (or focus) the single project-manager window, seeded with DIRS."
+  (let ((existing (first-that (program-desktop app)
+                              (lambda (v) (typep v 'tproject-manager-window)))))
+    (if existing
+        (progn (focus existing) existing)
+        (let* ((desk (program-desktop app))
+               (dw (point-x (view-size desk))) (dh (point-y (view-size desk)))
+               (ww (min 62 (- dw 2))) (wh (min 24 (- dh 2)))
+               (open (%open-editor-keys app))
+               (nodes (mapcar (lambda (d) (%fs-root-node d open)) dirs))
+               (win (make-instance 'tproject-manager-window :app app :pm-roots dirs
+                      :all-roots nodes
+                      :title "Projects  (A:add R:remove Enter:open O:all G:rescan /:filter)"
+                      :bounds (make-trect 0 0 ww wh)))
+               (vsb (standard-scrollbar win t))
+               (hsb (standard-scrollbar win nil))
+               (ol (make-instance 'toutline :roots nodes
+                      :bounds (make-trect 1 1 (1- ww) (1- wh)))))
+          (insert win ol) (attach-scrollbars ol :vscroll vsb :hscroll hsb)
+          (setf (pw-outline win) ol)
+          (move-to win (max 0 (floor (- dw ww) 2)) (max 0 (floor (- dh wh) 2)))
+          (insert desk win) (focus ol)
+          win))))
+
 ;;; --- session save/restore --------------------------------------------------
 
 (defun %window-bounds-list (w)
@@ -4748,6 +4970,12 @@ string or comment (so it won't fight existing literals)."
              (logtest (event-modifiers event) +md-alt+)
              (= (event-char-code event) (char-code #\0)))
     (do-window-list app) (clear-event event))
+  ;; Alt-P -> Project manager, from anywhere.  (Alt-1..9 stay reserved for the
+  ;; framework's select-window-by-number.)
+  (when (and (= (event-type event) +ev-key-down+)
+             (logtest (event-modifiers event) +md-alt+)
+             (= (event-char-code event) (char-code #\p)))
+    (open-project-manager app) (clear-event event))
   ;; (Ctrl-F5 -> Size/Move, Alt-F3 -> Close, Shift-F6 -> Previous are wired as
   ;; modifier-aware Window-menu shortcuts now, so no manual interception here.)
   ;; Alt-Q -> re-indent the whole top-level form in the focused editor
@@ -4893,6 +5121,7 @@ string or comment (so it won't fight existing literals)."
           ((= c +cm-new-file+)    (do-new-editor app) (clear-event event))
           ((= c +cm-editor+)      (do-open-editor app) (clear-event event))
           ((= c +cm-project+)     (do-project app) (clear-event event))
+          ((= c +cm-project-manager+) (open-project-manager app) (clear-event event))
           ((= c +cm-save+)        (do-save-editor app) (clear-event event))
           ((= c +cm-saveas+)      (do-saveas-editor app) (clear-event event))
           ((= c +cm-save-all+)    (do-save-all app) (clear-event event))
@@ -4957,7 +5186,10 @@ F2 new REPL, F3 clear, F4 tile, F5 zoom (Ctrl-F5 size/move), F6 next~%~
   ;; user functions and the debugger shows frame locals.
   (proclaim '(optimize (debug 3) (speed 1)))
   (setf (view-help-ctx (program-desktop app)) +hc-repl+)
-  (open-repl-window app :maximized t))
+  (open-repl-window app :maximized t)
+  ;; reopen the project manager if any roots were saved last session
+  (let ((dirs (load-project-roots)))
+    (when dirs (open-project-manager app dirs))))
 
 (defun %report-event-error (c)
   "Show an unexpected UI-thread error in a dialog instead of crashing the IDE."
