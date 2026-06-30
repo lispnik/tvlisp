@@ -100,13 +100,29 @@ package the buffer's IN-PACKAGE form selects (falling back to *PACKAGE*)."
                    *package*)))
       (and complete (ignore-errors (funcall complete token pkg))))))
 
+;;; Stage 5: project manager.  Two more tv2 hooks reuse tvlisp's real PM logic:
+;;; git status badges (%GIT-STATUS-MAP -> relpath/:modified/:added) and
+;;; find-in-files (%PM-GREP -> git grep / grep -rnI, returning match locations).
+
+(defun tvlisp-project-status (dir)
+  "Hash of relative-path -> :modified / :added for files git reports changed."
+  (let ((statusmap (find-symbol "%GIT-STATUS-MAP" :tvision-tvlisp)))
+    (and statusmap (funcall statusmap dir))))
+
+(defun tvlisp-project-grep (dir query)
+  "List of (ABS-PATH LINE TEXT) matches of QUERY under DIR (capped by tvlisp)."
+  (let ((grep (find-symbol "%PM-GREP" :tvision-tvlisp)))
+    (and grep (funcall grep dir query))))
+
 (defun install-tvlisp-logic ()
   "Inject tvlisp's real logic into the tv2 toolkit (extended each migration stage)."
   (setf tv2:*lisp-indenter*         #'tvlisp-indent               ; stage 1: editor indentation
         tv2:*repl-eval-fn*          #'tvlisp-repl-eval            ; stage 2: REPL evaluator
         tv2:*editor-eval-fn*        #'tvlisp-editor-eval          ; stage 3: eval-defun / eval-region
         tv2:*editor-completions-fn* #'tvlisp-editor-completions   ; stage 4: symbol completion
-        tv2:*paren-matcher*         (find-symbol "%PAREN-MATCH-OFFSET" :tvision)))   ; stage 4: bracket match
+        tv2:*paren-matcher*         (find-symbol "%PAREN-MATCH-OFFSET" :tvision)   ; stage 4: bracket match
+        tv2:*project-status-fn*     #'tvlisp-project-status       ; stage 5: git status badges
+        tv2:*project-grep-fn*       #'tvlisp-project-grep))        ; stage 5: find-in-files
 
 (defun main ()
   "Run the tv2-based tvlisp IDE until the user quits the launcher."
