@@ -41,6 +41,23 @@ sbcl --eval '(asdf:make :tvlisp)' --quit     # -> ./tvlisp
 `asdf:make` uses the `program-op` / `build-pathname` / `entry-point` settings in
 `tvlisp.asd` to dump a self-contained binary.
 
+### Running on the tv2 CLOS kernel
+
+`tvlisp` is built on the original `tvision` framework.  Every tvlisp window has
+also been rebuilt on **tv2**, a clean-break CLOS-native re-architecture of the
+framework (reactive metaclass, CLOS event dispatch, named commands + keymaps, a
+layout DSL, MOP persistence, a worker→UI bridge — see
+[`../tvision/tv2/README.md`](../tvision/tv2/README.md)).  The `tvlisp/tv2` system
+launches that IDE — a menu of the ported windows (REPL, editor, project manager,
+browsers, thread monitor, HTML browser):
+
+```sh
+make tvlisp-tv2   # build ./tvlisp-tv2 (runs on the tv2 kernel)
+make run-tv2      # build and run it
+```
+
+It is a separate system/binary, so the classic build above is untouched.
+
 At a glance — the tools it ships (each detailed below):
 
 - **REPL** — threaded per-listener evaluation, **completion** (prefix +

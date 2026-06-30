@@ -3,14 +3,19 @@
 # tvlisp is dumped by ASDF's `program-op' (configured via :build-operation /
 # :build-pathname / :entry-point in tvlisp.asd):
 #
-#   tvlisp  <- system tvlisp   (entry tvision-tvlisp:toplevel)
+#   tvlisp      <- system tvlisp       (entry tvision-tvlisp:toplevel)
+#   tvlisp-tv2  <- system tvlisp/tv2    (entry tvlisp-tv2:toplevel)
 #
-# It depends on the `tvision' framework, a sibling project at ../tvision.
+# It depends on the `tvision' framework, a sibling project at ../tvision.  The
+# tvlisp-tv2 build instead runs on `tv2', the CLOS-native re-architecture of the
+# framework (../tvision/tv2): every tvlisp window rebuilt on a new kernel.
 #
 # Usage:
-#   make            # build ./tvlisp
+#   make            # build ./tvlisp (classic)
+#   make tvlisp-tv2 # build ./tvlisp-tv2 (on the tv2 CLOS kernel)
+#   make run-tv2    # build & run the tv2 IDE
 #   make test       # tvlisp pty smoke tests against the built binary
-#   make clean      # remove the binary and this project's fasl cache
+#   make clean      # remove the binaries and this project's fasl cache
 
 SBCL ?= sbcl
 PYTHON ?= python3
@@ -27,17 +32,26 @@ endef
 
 # Rebuild whenever the app source or the framework changes.
 FRAMEWORK := $(wildcard ../tvision/src/*.lisp) ../tvision/tvision.asd
+# The tv2 kernel (../tvision/tv2) that the tvlisp-tv2 build runs on.
+TV2 := $(wildcard ../tvision/tv2/*.lisp) ../tvision/tv2.asd
 
 .DEFAULT_GOAL := all
-.PHONY: all clean run test test-lisp test-pty help
+.PHONY: all clean run run-tv2 test test-lisp test-pty help
 
 all: tvlisp
 
 tvlisp: tvlisp.asd src/tvlisp.lisp $(FRAMEWORK)
 	$(call asdf-make,tvlisp)
 
+# tvlisp on the tv2 CLOS kernel (a separate binary; the classic build is above).
+tvlisp-tv2: tvlisp.asd src/tv2-main.lisp $(FRAMEWORK) $(TV2)
+	$(call asdf-make,tvlisp/tv2)
+
 run: tvlisp
 	./tvlisp
+
+run-tv2: tvlisp-tv2
+	./tvlisp-tv2
 
 # Full test: the headless REPL/debugger/inspector suite plus the pty smoke test.
 test: test-lisp test-pty
@@ -55,8 +69,8 @@ test-pty: tvlisp tests/pty_smoke.py
 	$(PYTHON) tests/pty_smoke.py ./tvlisp
 
 clean:
-	rm -f tvlisp
+	rm -f tvlisp tvlisp-tv2
 	rm -rf $(HOME)/.cache/common-lisp/*tvlisp* 2>/dev/null || true
 
 help:
-	@echo "Targets: all (default), tvlisp, run, test, clean"
+	@echo "Targets: all (default), tvlisp, tvlisp-tv2, run, run-tv2, test, clean"

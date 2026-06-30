@@ -34,3 +34,20 @@ Only the tests depend on FiveAM; the tvlisp binary has no external dependencies.
                 :components ((:file "tvlisp-tests"))))
   :perform (asdf:test-op (o c)
              (uiop:symbol-call :tvision-tvlisp-tests :run-tests)))
+
+;;; tvlisp on the experimental tv2 CLOS kernel (../tvision/tv2).  Every tvlisp
+;;; window has been rebuilt on tv2; this system launches that IDE shell.  It is
+;;; separate so the classic `tvlisp' build above is unaffected.
+;;; `asdf:make :tvlisp/tv2` dumps a standalone `tvlisp-tv2' executable.
+(asdf:defsystem "tvlisp/tv2"
+  :description "tvlisp running on the experimental tv2 CLOS-native kernel."
+  :author "Matthew Kennedy"
+  :license "MIT"
+  :version "0.1.0"
+  :depends-on ("tv2")
+  :serial t
+  :build-operation "program-op"
+  :build-pathname "tvlisp-tv2"
+  :entry-point "tvlisp-tv2:toplevel"
+  :components ((:module "src"
+                :components ((:file "tv2-main")))))
