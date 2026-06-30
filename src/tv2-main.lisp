@@ -66,10 +66,30 @@ backend, then post output + results + new package back through tv2's UI bridge."
            (setf (tv2:repl-package win) new-pkg (tv2:repl-busy win) nil)
            (tv2::%repl-update-prompt win)))))))
 
+;;; Stage 3: eval-defun / eval-region.  The editor's Eval chip evaluates the
+;;; selection (region) or, if none, the top-level form at the cursor — extracted
+;;; with tvlisp's real %TOPLEVEL-FORM-AT-OFFSET — in the desktop's REPL.
+
+(defun %blankp (s) (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return) (or s "")))))
+
+(defun tvlisp-editor-eval (te)
+  "Evaluate the region (or the top-level form at point) in the REPL."
+  (let* ((text (tv2:te-text te))
+         (sel  (tv2::te-selected-string te))
+         (off  (+ (%line-offset te (tv2::te-cy te)) (tv2::te-cx te)))
+         (form (if (not (%blankp sel)) sel
+                   (funcall (find-symbol "%TOPLEVEL-FORM-AT-OFFSET" :tvision-tvlisp) text off))))
+    (unless (%blankp form)
+      (let ((repl (tv2:ensure-repl)))
+        (when repl
+          (tv2::dt-raise tv2:*desktop* repl) (tv2:invalidate tv2:*desktop*)   ; show the result
+          (tv2:repl-submit-string repl (string-trim '(#\Space #\Tab #\Newline #\Return) form)))))))
+
 (defun install-tvlisp-logic ()
   "Inject tvlisp's real logic into the tv2 toolkit (extended each migration stage)."
-  (setf tv2:*lisp-indenter* #'tvlisp-indent          ; stage 1: editor indentation
-        tv2:*repl-eval-fn*   #'tvlisp-repl-eval))     ; stage 2: REPL evaluator
+  (setf tv2:*lisp-indenter*  #'tvlisp-indent          ; stage 1: editor indentation
+        tv2:*repl-eval-fn*    #'tvlisp-repl-eval       ; stage 2: REPL evaluator
+        tv2:*editor-eval-fn*  #'tvlisp-editor-eval))   ; stage 3: eval-defun / eval-region
 
 (defun main ()
   "Run the tv2-based tvlisp IDE until the user quits the launcher."
