@@ -119,6 +119,85 @@ package the buffer's IN-PACKAGE form selects (falling back to *PACKAGE*)."
   (let ((grep (find-symbol "%PM-GREP" :tvision-tvlisp)))
     (and grep (funcall grep dir query))))
 
+;;; Stage 9: paredit / structural editing.  tv2's editor calls *PAREDIT-FN* with
+;;; an op + the buffer text + cursor offset; we reuse tvlisp's real sexp layer
+;;; (%SEXP-BOUNDS / %SEXP-SPAN-AT / %SEXP-SPANS / %INNER-LIST / %PARENT-SIBLINGS)
+;;; to compute the new text + cursor, exactly as tvlisp's do-slurp/-barf/... do.
+
+(defun %ws-trim-left (s) (string-left-trim '(#\Space #\Tab #\Newline #\Return) s))
+
+(defun tvlisp-paredit (op text off)
+  "Structural edit OP at OFF in TEXT -> (values NEW-TEXT NEW-OFF), or NIL."
+  (flet ((sym (n) (find-symbol n :tvision-tvlisp)))
+    (let ((%bounds (sym "%SEXP-BOUNDS")) (%span (sym "%SEXP-SPAN-AT"))
+          (%spans (sym "%SEXP-SPANS")) (%inner (sym "%INNER-LIST"))
+          (%sibs  (sym "%PARENT-SIBLINGS")))
+      (macrolet ((sub (&rest a) `(subseq text ,@a)))
+        (ecase op
+          (:wrap
+           (multiple-value-bind (s e) (funcall %bounds text off)
+             (when s (values (concatenate 'string (sub 0 s) "(" (sub s e) ")" (sub e)) (1+ s)))))
+          (:splice
+           (multiple-value-bind (s e) (funcall %bounds text off)
+             (when (and s (> e s))
+               (values (concatenate 'string (sub 0 s) (sub (1+ s) (1- e)) (sub e)) (max s (1- off))))))
+          (:raise
+           (multiple-value-bind (is ie) (funcall %bounds text off)
+             (when is
+               (multiple-value-bind (ps pe) (funcall %bounds text (max 0 (1- is)))
+                 (when (and ps (< ps is) (>= pe ie))
+                   (values (concatenate 'string (sub 0 ps) (sub is ie) (sub pe)) ps))))))
+          (:slurp
+           (multiple-value-bind (s e) (funcall %bounds text off)
+             (when (and s (> e s))
+               (let ((cp (1- e)))
+                 (multiple-value-bind (n0 n1) (funcall %span text e)
+                   (declare (ignore n0))
+                   (when n1
+                     (values (concatenate 'string (sub 0 cp) (sub (1+ cp) n1) ")" (sub n1)) off)))))))
+          (:barf
+           (multiple-value-bind (s e) (funcall %bounds text off)
+             (when (and s (> (- e s) 2))
+               (let ((cp (1- e)) (last nil) (i (1+ s)))
+                 (loop (multiple-value-bind (a b) (funcall %span text i)
+                         (if (and a (< a cp)) (progn (setf last (cons a b) i b)) (return))))
+                 (when last
+                   (let* ((l0 (car last)) (l1 (min (cdr last) cp))
+                          (trimmed (string-right-trim '(#\Space #\Tab #\Newline #\Return) (sub (1+ s) l0))))
+                     (values (concatenate 'string (sub 0 (1+ s)) trimmed ") " (sub l0 l1) (sub (1+ cp))) off)))))))
+          (:slurp-back
+           (multiple-value-bind (s e) (funcall %bounds text off)
+             (when (and s (> e s))
+               (let* ((sibs (funcall %sibs text s e))
+                      (me (position s sibs :key #'car))
+                      (prev (and me (> me 0) (nth (1- me) sibs))))
+                 (when prev
+                   (values (concatenate 'string (sub 0 (car prev)) "(" (sub (car prev) (cdr prev)) " "
+                                        (sub (1+ s) e) (sub e))
+                           (1+ (car prev))))))))
+          (:barf-back
+           (multiple-value-bind (s e) (funcall %bounds text off)
+             (when (and s (> (- e s) 2))
+               (let ((fk (first (funcall %spans text (1+ s) (1- e)))))
+                 (when fk
+                   (values (concatenate 'string (sub 0 s) (sub (car fk) (cdr fk)) " ("
+                                        (%ws-trim-left (sub (cdr fk) (1- e))) (sub (1- e)))
+                           s))))))
+          (:transpose
+           (multiple-value-bind (s e) (funcall %inner text off)
+             (when s
+               (let* ((kids (funcall %spans text (1+ s) (1- e)))
+                      (idx (or (position-if (lambda (k) (and (<= (car k) off) (< off (cdr k)))) kids)
+                               (position-if (lambda (k) (<= (cdr k) off)) kids :from-end t))))
+                 (when (and idx (< (1+ idx) (length kids)))
+                   (let* ((a (nth idx kids)) (b (nth (1+ idx) kids)) (gap (sub (cdr a) (car b))))
+                     (values (concatenate 'string (sub 0 (car a)) (sub (car b) (cdr b)) gap
+                                          (sub (car a) (cdr a)) (sub (cdr b)))
+                             (+ (car a) (- (cdr b) (car b)) (length gap)))))))))
+          (:kill
+           (multiple-value-bind (a b) (funcall %span text off)
+             (when a (values (concatenate 'string (sub 0 a) (string-left-trim '(#\Space #\Tab) (sub b))) a)))))))))
+
 (defun install-tvlisp-logic ()
   "Inject tvlisp's real logic into the tv2 toolkit (extended each migration stage)."
   (setf tv2:*lisp-indenter*         #'tvlisp-indent               ; stage 1: editor indentation
@@ -131,7 +210,8 @@ package the buffer's IN-PACKAGE form selects (falling back to *PACKAGE*)."
         tv2:*object->outline-fn*    (or (find-symbol "OBJECT->OUTLINE" :tvision)   ; stage 7: object inspector
                                         tv2:*object->outline-fn*)
         tv2:*profile-fn*            (let ((p (find-symbol "RUN-PROFILE" :tvision-tvlisp)))   ; stage 8: sb-sprof profiler
-                                      (and p (lambda (form package) (funcall p form package))))))
+                                      (and p (lambda (form package) (funcall p form package))))
+        tv2:*paredit-fn*            #'tvlisp-paredit))                                       ; stage 9: paredit
 
 (defun main ()
   "Run the tv2-based tvlisp IDE until the user quits the launcher."
