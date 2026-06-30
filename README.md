@@ -379,23 +379,41 @@ keys:
 - **Thread monitor** (F9, Window ▸ Threads) lists the worker threads with
   Refresh / Kill; new REPL (F2), Clear (F3), Tile (F4), Cascade (F5), Next (F6),
   Close (Window ▸ Close), Help (F1).
-- **Project manager** (Window ▸ Projects, **Alt-P**) — a persistent, multi-root
-  file explorer.  Add any number of project roots (**A**, a directory picker);
-  each becomes an expandable `TOutline` tree of its files.  The files listed per
-  root are the ones **git tracks** (`git ls-files`), so build artifacts and
-  ignored files never appear — a directory that is not a git repository falls
-  back to listing every file on disk.  Directories that contain `.lisp` files are
-  **expanded by default** (doc / asset directories stay folded away).  **Enter**
-  opens (or focuses) the file at the cursor in an editor — open files carry a
-  filled bullet (●), unopened ones a hollow bullet (○); **O** opens every file
-  under the node, **R** removes the focused root (the files on disk are left
-  untouched), **G** rescans from disk, and **`/`** fuzzy-filters the whole tree.
-  The set of roots is saved to `~/.tvlisp_projects` and the window reopens itself
-  on startup.  It is single-instance (Alt-P focuses the existing window).  This
-  is distinct from File ▸ Open System…, which browses a single ASDF system's
-  component tree.
+- **Project manager** (Window ▸ Projects, **Alt-P**) — a persistent, git-aware,
+  multi-root file explorer (the IDE "sidebar").  Add any number of project roots
+  (**A**, a directory picker); each becomes an expandable tree of its files.
+  - **Git-aware file list.** Files come from what **git tracks** (`git ls-files`)
+    plus **untracked-but-not-ignored** files (`ls-files --others`), so build
+    artifacts and ignored files never appear; a non-git directory falls back to
+    every file on disk.  Each file carries an open/closed bullet (● open in an
+    editor, ○ not) and a status tag — **`[M]`** modified, **`[+]`** staged,
+    **`[?]`** untracked, **`[L]`** loaded into the image — and a matching row
+    tint; folders containing changes are tinted too.
+  - **Lazy + tidy.** Directories load their children **on first expand**, so the
+    tree scales to large repos; directories with `.lisp` files expand by default
+    while doc / asset directories stay folded.  **`/`** fuzzy-filters the whole
+    tree (auto-expanding matches), and **S** cycles the file sort order
+    **name → type → recent**.
+  - **Open & evaluate.** **Enter** opens (or focuses) the file in an editor;
+    **O** opens every file under a node; **L** loads / **C** compiles-and-loads
+    the file into the running image.  **Reveal current file** (Window menu)
+    expands the tree to whatever the focused editor is showing.
+  - **File operations** (single keys, or a **right-click** context menu):
+    **N** new file, **K** new folder, **M** rename, **D** delete (folders
+    recursively, with a confirm) — refusing to touch an item that is open in an
+    editor, or a project root.
+  - **Find in files.** **F** greps the focused root (`git grep`, else
+    `grep -rnI`) and lists matches in a fuzzy-filterable picker; choosing one
+    jumps to that file and line.
+  - **Persistent & live.** Roots **and which folders are expanded** persist to
+    `~/.tvlisp_projects`; the window reopens itself on startup, single-instance
+    (Alt-P focuses it).  It auto-refreshes on idle, so files created/changed
+    outside the IDE (and git state) show up on their own — like the editor's git
+    gutter.  **R** removes a root from the list (files on disk untouched), **G**
+    rescans now.  (Distinct from File ▸ Open System…, which browses one ASDF
+    system's component tree.)
 
-  ![The project manager: a git-tracked file tree with .lisp directories expanded and doc/asset directories collapsed](media/project-manager.gif)
+  ![The project manager in action: two repos as roots, git status badges, lazy expand, sort, find-in-files, new file and reveal](media/project-manager.gif)
 - **Numbered windows** — each window is assigned the lowest free number 1–9
   (shown in its frame, classic TV style); **Alt-1…9** jumps straight to that
   window.
