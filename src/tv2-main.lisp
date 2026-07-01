@@ -55,10 +55,12 @@ backend, then post output + results + new package back through tv2's UI bridge."
       (let ((lastvals (car (last results))))                  ; remember the primary result (object clipboard)
         (when (and (not errored) lastvals)
           (setf (tv2:repl-last-value win) (first lastvals) (tv2:repl-last-value-p win) t)))
-      (let ((result-strs (let ((*package* new-pkg))            ; print results in the listener's package
-                           (unless errored
-                             (loop for vals in results
-                                   collect (if vals (mapcar #'prin1-to-string vals) :none))))))
+      ;; pair each result object with its printed form so the transcript can show
+      ;; it as a clickable presentation (SLY-style: click to inspect the object)
+      (let ((result-entries (let ((*package* new-pkg))
+                              (unless errored
+                                (loop for vals in results
+                                      collect (if vals (mapcar (lambda (o) (cons o (prin1-to-string o))) vals) :none))))))
         (tv2:run-on-ui
          (lambda ()
            (let ((sb (tv2:find-view win 'tv2::transcript)))
@@ -67,10 +69,11 @@ backend, then post output + results + new package back through tv2's UI bridge."
                  (tv2:scrollback-append sb output)
                  (unless (char= (char output (1- (length output))) #\Newline)
                    (tv2:scrollback-append sb (string #\Newline))))
-               (dolist (vals result-strs)
-                 (if (eq vals :none)
+               (dolist (entry result-entries)
+                 (if (eq entry :none)
                      (tv2:scrollback-append sb (format nil "; No values~%"))
-                     (dolist (v vals) (tv2:scrollback-append sb (format nil "=> ~a~%" v)))))))
+                     (dolist (pair entry)
+                       (tv2:scrollback-present sb (format nil "=> ~a~%" (cdr pair)) (car pair)))))))
            (setf (tv2:repl-package win) new-pkg (tv2:repl-busy win) nil)
            (tv2::%repl-update-prompt win)))))))
 
