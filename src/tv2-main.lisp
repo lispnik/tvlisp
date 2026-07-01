@@ -201,6 +201,15 @@ package the buffer's IN-PACKAGE form selects (falling back to *PACKAGE*)."
            (multiple-value-bind (a b) (funcall %span text off)
              (when a (values (concatenate 'string (sub 0 a) (string-left-trim '(#\Space #\Tab) (sub b))) a)))))))))
 
+(defun tvlisp-reorder (name text perm r)
+  "Reorder the first R positional args of every direct call (NAME ...) in TEXT
+per PERM, reusing tvlisp's sexp rewriter.  Returns new TEXT, or NIL if unchanged."
+  (let ((%edits (find-symbol "%REORDER-EDITS" :tvision-tvlisp))
+        (%apply (find-symbol "%APPLY-REORDER" :tvision-tvlisp)))
+    (when (and %edits %apply)
+      (let ((edits (funcall %edits text name perm r)))
+        (when edits (funcall %apply text edits))))))
+
 (defun install-tvlisp-logic ()
   "Inject tvlisp's real logic into the tv2 toolkit (extended each migration stage)."
   (setf tv2:*lisp-indenter*         #'tvlisp-indent               ; stage 1: editor indentation
@@ -215,6 +224,7 @@ package the buffer's IN-PACKAGE form selects (falling back to *PACKAGE*)."
         tv2:*profile-fn*            (let ((p (find-symbol "RUN-PROFILE" :tvision-tvlisp)))   ; stage 8: sb-sprof profiler
                                       (and p (lambda (form package) (funcall p form package))))
         tv2:*paredit-fn*            #'tvlisp-paredit                                         ; stage 9: paredit
+        tv2:*reorder-fn*            #'tvlisp-reorder                                         ; reorder args at call sites
         tv2:*url-fetch-fn*          (find-symbol "%HTTP-GET" :tvision-tvlisp)                ; stage 13: fetch (curl)
         tv2:*hyperspec-url-fn*      (find-symbol "HYPERSPEC-URL" :tvision-tvlisp)))          ; stage 13: CLHS map
 
