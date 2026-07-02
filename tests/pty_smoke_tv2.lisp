@@ -167,6 +167,9 @@
          ;; 13. emoji palette: filter by Unicode name, copy, paste elsewhere
          (open-menu d #\t) (menu-item d "Emoji palette")
          (check d "emoji palette opens with a Filter" (and (wait-for d "Emoji palette") (found? d "Filter")))
+         (type-text d "thumbs") (drain d 0.4)
+         (check d "shows skin-tone variants" (and (found? d "dark skin tone") (found? d "light skin tone")))
+         (dotimes (i 6) (key d "bs"))                        ; clear the filter
          (type-text d "party") (drain d 0.4)
          (check d "filters by SBCL char-name (PARTY POPPER)" (found? d "PARTY POPPER"))
          (key d "enter")
