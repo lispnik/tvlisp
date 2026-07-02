@@ -111,6 +111,11 @@ package the buffer's IN-PACKAGE form selects (falling back to *PACKAGE*)."
                    *package*)))
       (and complete (ignore-errors (funcall complete token pkg))))))
 
+(defun tvlisp-repl-completions (token package)
+  "REPL Tab-completion candidates for TOKEN in the listener's PACKAGE."
+  (let ((complete (find-symbol "REPL-BACKEND-COMPLETIONS" :tvision)))
+    (and complete (ignore-errors (funcall complete token (or package *package*))))))
+
 ;;; Stage 5: project manager.  Two more tv2 hooks reuse tvlisp's real PM logic:
 ;;; git status badges (%GIT-STATUS-MAP -> relpath/:modified/:added) and
 ;;; find-in-files (%PM-GREP -> git grep / grep -rnI, returning match locations).
@@ -219,6 +224,7 @@ per PERM, reusing tvlisp's sexp rewriter.  Returns new TEXT, or NIL if unchanged
         tv2:*repl-eval-fn*          #'tvlisp-repl-eval            ; stage 2: REPL evaluator
         tv2:*editor-eval-fn*        #'tvlisp-editor-eval          ; stage 3: eval-defun / eval-region
         tv2:*editor-completions-fn* #'tvlisp-editor-completions   ; stage 4: symbol completion
+        tv2:*repl-completions-fn*   #'tvlisp-repl-completions     ; REPL Tab completion
         tv2:*paren-matcher*         (find-symbol "%PAREN-MATCH-OFFSET" :tvision)   ; stage 4: bracket match
         tv2:*project-status-fn*     #'tvlisp-project-status       ; stage 5: git status badges
         tv2:*project-grep-fn*       #'tvlisp-project-grep         ; stage 5: find-in-files
