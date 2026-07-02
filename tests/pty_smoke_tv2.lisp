@@ -24,7 +24,7 @@
   (or (sb-ext:posix-getenv "TVLISP_TV2_BIN")
       (namestring (truename (format nil "~a../tvlisp-tv2" (directory-namestring *load-pathname*))))))
 
-(let ((d (launch (binary) :cols 100 :rows 30)))
+(let ((d (launch (binary) :cols 130 :rows 30)))
   (unwind-protect
        (progn
          ;; 1. consolidated, framed menu bar
@@ -128,6 +128,18 @@
          (check d "Save-as prefills the project dir in the path field" (wait-for d "common-lisp"))
          (ctrl d #\u)
          (check d "Ctrl-U clears the file-dialog path field" (wait-gone d "common-lisp" :timeout 3))
+         (key d "esc")
+
+         ;; 9. TLabel: clicking a linked label focuses its control (Replace dialog).
+         (open-menu d #\w) (key d "down") (key d "enter") (wait-for d "Text editor")
+         (ctrl d #\a) (key d "del") (type-text d "hello world")
+         (click-text d "Replace")                            ; editor status chip -> Replace dialog
+         (check d "Replace dialog opens" (wait-for d "Replace:"))
+         (type-text d "FFF")                                 ; default focus is the Find field
+         (click-text d "Replace:")                           ; click the ~R~eplace label
+         (type-text d "RRR")
+         (check d "clicking a label focuses its linked control (TLabel)"
+                (and (found? d "RRR") (not (found? d "FFFRRR"))))
          (key d "esc"))
     (quit-driver d))
   (sb-ext:exit :code (report d :title "tvlisp-tv2 pty smoke")))
