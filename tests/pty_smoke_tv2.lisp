@@ -162,6 +162,17 @@
          (open-menu d #\f) (menu-item d "Open file")
          (check d "Open dialog has a type-ahead Filter field"
                 (and (wait-for d "Open file") (found? d "Filter") (found? d "Hidden")))
-         (key d "esc"))
+         (key d "esc")
+
+         ;; 13. emoji palette: filter by Unicode name, copy, paste elsewhere
+         (open-menu d #\t) (menu-item d "Emoji palette")
+         (check d "emoji palette opens with a Filter" (and (wait-for d "Emoji palette") (found? d "Filter")))
+         (type-text d "party") (drain d 0.4)
+         (check d "filters by SBCL char-name (PARTY POPPER)" (found? d "PARTY POPPER"))
+         (key d "enter")
+         (check d "Enter copies the emoji" (wait-for d "copied"))
+         (open-menu d #\f) (key d "enter") (wait-for d "scratch")   ; new editor
+         (ctrl d #\a) (key d "del") (ctrl d #\v)
+         (check d "the copied emoji pastes into an editor" (found? d "🎉")))
     (quit-driver d))
   (sb-ext:exit :code (report d :title "tvlisp-tv2 pty smoke")))
