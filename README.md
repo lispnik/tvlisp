@@ -472,15 +472,19 @@ keys:
   are read directly.  The Help menu also opens the online SBCL, ECL, and CCL
   manuals in the same browser.
 
-![Open in editor: choosing a file and loading it into an editor window](media/open-in-editor.gif)
+The **Open** dialog has a live type-ahead **Filter** (it narrows the list as you
+type and auto-selects the first match, so Enter opens it), a current-directory
+**breadcrumb**, and a **Hidden**-files toggle.
 
-![Browsing directories in the file dialog by keyboard](media/file-dialog-nav.gif)
+![Open in editor: the type-ahead Filter narrows the list; Enter opens the file into an editor](media/open-in-editor.gif)
 
-`TLabel`s carry the classic mnemonic: the accented letter in `~N~ame` / `~F~iles`
-is an Alt-hotkey (and a click target) that moves focus to the linked control, so
-Alt-N jumps to the filename field and Alt-F to the browser.
+![Browsing directories in the file dialog: the breadcrumb path, "../", and a Hidden-files toggle](media/file-dialog-nav.gif)
 
-![File-dialog mnemonics: Alt-N focuses the Name field, Alt-F the file browser](media/file-dialog-mnemonics.gif)
+**Saving** is a distinct dialog: a **Name** field pre-filled with a suggested
+filename, the active file **mask shown as a hint** (`(*.lisp)`), a **New folder**
+button, and an **overwrite confirmation** before it replaces an existing file.
+
+![Save dialog: the (*.lisp) mask hint, a suggested file name, and overwrite confirmation](media/file-dialog-save.gif)
 
 ![Browsing the Common Lisp HyperSpec in the THtmlView control](media/hyperspec.gif)
 
