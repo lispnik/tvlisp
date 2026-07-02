@@ -126,6 +126,7 @@
          (check d "the editor now shows a line-number gutter" (wait-for d "1 (defun a"))
          (open-menu d #\f) (menu-item d "Save as")
          (check d "Save dialog suggests a default file name" (wait-for d "untitled.lisp"))
+         (check d "Save dialog shows the active mask hint (*.lisp)" (found? d "(*.lisp)"))
          (ctrl d #\u)
          (check d "Ctrl-U clears the Name field" (wait-gone d "untitled.lisp" :timeout 3))
          (key d "esc")
