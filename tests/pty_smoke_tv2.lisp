@@ -83,6 +83,10 @@
          ;; via their transcript notes.
          (open-menu d #\w) (key d "down") (key d "enter") (wait-for d "Text editor")
          (ctrl d #\a) (key d "del") (type-text d "(defun foo")   ; cursor rests on the symbol
+         (open-menu d #\e)
+         (check d "Edit menu exposes Undo/Cut/Copy/Paste/Select all"
+                (and (found? d "Undo") (found? d "Cut") (found? d "Copy") (found? d "Paste") (found? d "Select all")))
+         (key d "esc")
          (open-menu d #\f) (menu-item d "Save as")               ; editor still focused (no note yet)
          (check d "Save-as file dialog opens" (wait-for d "Save as"))
          (key d "esc")
@@ -97,7 +101,10 @@
          (open-menu d #\w) (menu-item d "List")
          (check d "window list dialog lists open windows" (and (wait-for d "Windows") (found? d "Text editor")))
          (key d "esc")
-         (open-menu d #\f) (menu-item d "Clear REPL")            ; removes the theme note from the transcript
-         (check d "Clear REPL empties the transcript" (wait-gone d "colour theme: Dark" :timeout 4)))
+         (open-menu d #\w) (key d "enter") (wait-for d "Lisp REPL")   ; raise/focus a REPL, give it output
+         (type-text d "(* 7 9)") (key d "enter")
+         (check d "REPL shows eval output" (wait-for d "=> 63"))
+         (open-menu d #\f) (menu-item d "Clear REPL")
+         (check d "Clear REPL empties the transcript" (wait-gone d "=> 63" :timeout 4)))
     (quit-driver d))
   (sb-ext:exit :code (report d :title "tvlisp-tv2 pty smoke")))
