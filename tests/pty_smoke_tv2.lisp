@@ -98,6 +98,7 @@
          (check d "pop-back reports the empty stack" (wait-for d "location stack is empty"))
          (open-menu d #\o) (menu-item d "Colour theme")
          (check d "colour theme cycles to Dark" (wait-for d "colour theme: Dark"))
+         (check d "status note auto-clears after a few seconds" (wait-gone d "colour theme: Dark" :timeout 8))
          (open-menu d #\w) (menu-item d "List")
          (check d "window list dialog lists open windows" (and (wait-for d "Windows") (found? d "Text editor")))
          (key d "esc")
