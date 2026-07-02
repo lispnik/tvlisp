@@ -93,7 +93,7 @@
                 (and (found? d "Undo") (found? d "Cut") (found? d "Copy") (found? d "Paste") (found? d "Select all")))
          (key d "esc")
          (open-menu d #\f) (menu-item d "Save as")               ; editor still focused (no note yet)
-         (check d "Save-as file dialog opens" (wait-for d "Save as"))
+         (check d "Save dialog opens (Save file / Name field)" (and (wait-for d "Save file") (found? d "Name")))
          (key d "esc")
          (open-menu d #\e) (menu-item d "Rename symbol")
          (check d "rename-symbol prompt" (wait-for d "Rename foo"))
@@ -125,9 +125,9 @@
          (key d "esc")
          (check d "the editor now shows a line-number gutter" (wait-for d "1 (defun a"))
          (open-menu d #\f) (menu-item d "Save as")
-         (check d "Save-as prefills the project dir in the path field" (wait-for d "common-lisp"))
+         (check d "Save dialog suggests a default file name" (wait-for d "untitled.lisp"))
          (ctrl d #\u)
-         (check d "Ctrl-U clears the file-dialog path field" (wait-gone d "common-lisp" :timeout 3))
+         (check d "Ctrl-U clears the Name field" (wait-gone d "untitled.lisp" :timeout 3))
          (key d "esc")
 
          ;; 9. TLabel: clicking a linked label focuses its control (Replace dialog).
@@ -155,6 +155,12 @@
          (key d "c-f5") (check d "Ctrl-F5 enters Size/move mode" (wait-for d "Size/move"))
          (key d "enter")
          (alt d #\0) (check d "Alt-0 opens the window list" (wait-for d "Windows"))
+         (key d "esc")
+
+         ;; 12. reworked Open dialog (mode :open): title + type-ahead Filter field
+         (open-menu d #\f) (menu-item d "Open file")
+         (check d "Open dialog has a type-ahead Filter field"
+                (and (wait-for d "Open file") (found? d "Filter") (found? d "Hidden")))
          (key d "esc"))
     (quit-driver d))
   (sb-ext:exit :code (report d :title "tvlisp-tv2 pty smoke")))
