@@ -111,6 +111,23 @@
          (type-text d "(* 7 9)") (key d "enter")
          (check d "REPL shows eval output" (wait-for d "=> 63"))
          (open-menu d #\f) (menu-item d "Clear REPL")
-         (check d "Clear REPL empties the transcript" (wait-gone d "=> 63" :timeout 4)))
+         (check d "Clear REPL empties the transcript" (wait-gone d "=> 63" :timeout 4))
+
+         ;; 8. Settings controls are wired live, + Ctrl-U clears an input field.
+         ;; Open Settings by KEYBOARD (Alt-o + Enter): clicking the first menu item
+         ;; over a window lets the mouse-release steal focus and it won't open.
+         (open-menu d #\w) (key d "down") (key d "enter") (wait-for d "Text editor")
+         (ctrl d #\a) (key d "del") (type-text d "(defun a ())")
+         (open-menu d #\o) (key d "enter")
+         (check d "Settings opens with a Colour-theme radio" (wait-for d "Colour theme"))
+         (key d "down") (key d "down") (key d "down") (key d "space")   ; check "Line numbers"
+         (check d "a Settings feature toggle applies to open editors" (wait-for d "editor features applied"))
+         (key d "esc")
+         (check d "the editor now shows a line-number gutter" (wait-for d "1 (defun a"))
+         (open-menu d #\f) (menu-item d "Save as")
+         (check d "Save-as prefills the project dir in the path field" (wait-for d "common-lisp"))
+         (ctrl d #\u)
+         (check d "Ctrl-U clears the file-dialog path field" (wait-gone d "common-lisp" :timeout 3))
+         (key d "esc"))
     (quit-driver d))
   (sb-ext:exit :code (report d :title "tvlisp-tv2 pty smoke")))
